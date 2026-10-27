@@ -84,6 +84,9 @@ input[type=color]{width:38px;height:34px;border:0;padding:0;background:none;curs
 .check input{width:20px;height:20px;accent-color:var(--accent)}
 .actions{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
 
+/* feature layout */
+.sel{min-height:40px;border-radius:12px;border:1px solid var(--line);background:var(--chip);color:var(--ink);padding:0 10px;font:inherit;font-weight:650}
+.feat{display:grid;gap:12px;padding-top:14px;border-top:1px solid var(--line)}
 /* toast */
 #toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom));transform:translateX(-50%);background:var(--ink);color:var(--panel);padding:10px 16px;border-radius:999px;font-weight:650;z-index:30;max-width:90vw;text-align:center}
 
@@ -176,6 +179,26 @@ input[type=color]{width:38px;height:34px;border:0;padding:0;background:none;curs
         </div>
         <p class="hint" id="modeHint"></p>
         <div class="row"><label for="zoom">Zoom</label><input type="range" id="zoom" min="1" max="4" step="0.01" value="1"><span class="val" id="zoomV">1.0×</span></div>
+        <div class="feat">
+          <span class="lab">Feature this photo</span>
+          <p class="hint">Give it the main space on one slide and choose which photos surround it.</p>
+          <div class="row"><label for="featSlide">Slide</label><select id="featSlide" class="sel"></select></div>
+          <div class="row"><span class="lab">Photos around</span>
+            <div class="stepper"><button id="featMinus" aria-label="Fewer surrounding photos">−</button><output id="featN">3</output><button id="featPlus" aria-label="More surrounding photos">+</button></div>
+          </div>
+          <div class="row"><span class="lab">Placement</span>
+            <div class="chips" id="featSide">
+              <button class="chip" data-s="left" aria-pressed="true">Left</button>
+              <button class="chip" data-s="right" aria-pressed="false">Right</button>
+              <button class="chip" data-s="top" aria-pressed="false">Top</button>
+              <button class="chip" data-s="bottom" aria-pressed="false">Bottom</button>
+              <button class="chip" data-s="around" aria-pressed="false">All around</button>
+            </div>
+          </div>
+          <div class="row"><label for="featSize">Main size</label><input type="range" id="featSize" min="40" max="85" value="62"><span class="val" id="featSizeV">62%</span></div>
+          <p class="hint" id="featHint"></p>
+          <div class="actions"><button class="btn primary" id="featApply">Apply layout</button><button class="btn" id="featClear" hidden>Stop featuring</button></div>
+        </div>
         <div class="actions">
           <button class="btn" id="swapBtn" aria-pressed="false">Swap with…</button>
           <button class="btn" id="frontBtn">Bring to front</button>
@@ -233,8 +256,9 @@ const RATIOS={'4:5':[4,5],'1:1':[1,1],'9:16':[9,16]};
 const SWATCHES=['#ffffff','#f3ece1','#d8e4f0','#101114','#e0145a'];
 
 const S={W:1080,H:1350,ratio:'4:5',slides:3,gap:20,radius:24,bg:'#ffffff',
-  items:[],sel:null,mode:'frame',vz:.35,bs:1,guides:true,swap:false,nextId:1};
+  items:[],sel:null,mode:'frame',vz:.35,bs:1,guides:true,swap:false,nextId:1,feature:null};
 let history=[];
+const FEAT={n:3,side:'left',size:62};
 const cv=$('#cv'), cx=cv.getContext('2d');
 
 /* ---------- helpers ---------- */
@@ -251,38 +275,35 @@ const TW=()=>S.W*S.slides;
 
 /* ---------- decoding ---------- */
 async function decode(file,maxSide){
+  // <img>.decode() lets Safari downsample while decoding, which is much lighter than createImageBitmap on big photos
   let src,w,h;
-  try{ src=await createImageBitmap(file); w=src.width; h=src.height; }
-  catch(e){
-    src=await new Promise((res,rej)=>{
-      const u=URL.createObjectURL(file), im=new Image();
-      im.onload=()=>{res(im);setTimeout(()=>URL.revokeObjectURL(u),2000)};
-      im.onerror=()=>{URL.revokeObjectURL(u);rej(new Error('decode'))};
-      im.src=u;
-    });
-    w=src.naturalWidth; h=src.naturalHeight;
+  try{
+    const u=URL.createObjectURL(file);
+    try{ const im=new Image(); im.decoding='async'; im.src=u; await im.decode(); src=im; w=im.naturalWidth; h=im.naturalHeight; }
+    finally{ setTimeout(()=>URL.revokeObjectURL(u),3000); }
+    if(!w||!h) throw new Error('empty');
+  }catch(e){
+    src=await createImageBitmap(file); w=src.width; h=src.height;
+    if(!w||!h) throw new Error('empty');
   }
-  if(!w||!h) throw new Error('empty');
   const k=Math.min(1,maxSide/Math.max(w,h));
   const tw=Math.max(1,Math.round(w*k)), th=Math.max(1,Math.round(h*k));
-  let cur=src, cw=w, ch=h;
-  while(cw/2>tw){
-    const t=document.createElement('canvas'); t.width=Math.round(cw/2); t.height=Math.round(ch/2);
-    t.getContext('2d').drawImage(cur,0,0,t.width,t.height);
-    if(cur!==src) {cur.width=cur.height=0;}
-    cur=t; cw=t.width; ch=t.height;
+  let cur=src, mid=null;
+  if(w/tw>3){  // one intermediate step keeps big reductions smooth without piling up canvases
+    mid=document.createElement('canvas'); mid.width=tw*2; mid.height=Math.max(1,Math.round(h*k*2));
+    const m=mid.getContext('2d'); m.imageSmoothingQuality='high'; m.drawImage(src,0,0,mid.width,mid.height); cur=mid;
   }
   const out=document.createElement('canvas'); out.width=tw; out.height=th;
   const o=out.getContext('2d'); o.imageSmoothingQuality='high'; o.drawImage(cur,0,0,tw,th);
-  if(cur!==src) cur.width=cur.height=0;
+  if(mid) mid.width=mid.height=0;
   if(src.close) src.close();
   return out;
 }
 
 /* ---------- layout engine ---------- */
-function genCells(n){
-  const W=S.W,H=S.H,total=TW(),bounds=[];
-  for(let k=1;k<S.slides;k++) bounds.push(k*W);
+function genCells(n,x0=0,ns=S.slides){
+  const W=S.W,H=S.H,total=ns*W,bounds=[];
+  for(let k=1;k<ns;k++) bounds.push(x0+k*W);
   const ws=Array.from({length:n},()=>.75+Math.random()*.8);
   const out=[], minS=Math.min(W,H)*.2, tol=W*.07;
   const sum=a=>a.reduce((p,c)=>p+c,0);
@@ -301,13 +322,13 @@ function genCells(n){
       const y=r.y+r.h*frac;
       rec({x:r.x,y:r.y,w:r.w,h:y-r.y},left); rec({x:r.x,y,w:r.w,h:r.y+r.h-y},right);
     }
-  })({x:0,y:0,w:total,h:H},ws);
+  })({x:x0,y:0,w:total,h:H},ws);
   return out;
 }
-function scoreCells(cells){
-  const W=S.W,H=S.H,n=cells.length,avg=TW()*H/n; let s=0;
-  for(let k=1;k<S.slides;k++){
-    const b=k*W; let cross=0;
+function scoreCells(cells,x0=0,ns=S.slides){
+  const W=S.W,H=S.H,n=cells.length,avg=ns*W*H/n; let s=0;
+  for(let k=1;k<ns;k++){
+    const b=x0+k*W; let cross=0;
     for(const c of cells) if(c.x<b-.08*W&&c.x+c.w>b+.08*W) cross+=c.h;
     const f=cross/H; if(f<.45) s+=(.45-f)*60;
   }
@@ -323,6 +344,7 @@ function scoreCells(cells){
 }
 function layoutAll(){
   const n=S.items.length; if(!n) return;
+  if(S.feature&&applyFeature(S.feature)) return;
   const cand=[];
   for(let i=0;i<260;i++){const c=genCells(n);cand.push({c,s:scoreCells(c)+Math.random()*1.5});}
   cand.sort((a,b)=>a.s-b.s);
@@ -408,11 +430,11 @@ function draw(){
 }
 
 /* ---------- history ---------- */
-const snap=()=>({items:S.items.map(i=>({...i,pan:[...i.pan]})),slides:S.slides,ratio:S.ratio,H:S.H,sel:S.sel?S.sel.id:null});
+const snap=()=>({items:S.items.map(i=>({...i,pan:[...i.pan]})),slides:S.slides,ratio:S.ratio,H:S.H,sel:S.sel?S.sel.id:null,feature:S.feature?{...S.feature}:null});
 function pushHist(){history.push(snap()); if(history.length>60) history.shift(); $('#undo').disabled=false;}
 function undo(){
   const h=history.pop(); if(!h) return;
-  S.items=h.items; S.slides=h.slides; S.ratio=h.ratio; S.H=h.H; S.swap=false;
+  S.items=h.items; S.slides=h.slides; S.ratio=h.ratio; S.H=h.H; S.swap=false; S.feature=h.feature;
   S.sel=S.items.find(i=>i.id===h.sel)||null;
   resize(); syncUI();
 }
@@ -440,9 +462,10 @@ function syncUI(){
   $('#swapBtn').setAttribute('aria-pressed',String(S.swap));
   $('#swapBtn').textContent=S.swap?'Tap another photo…':'Swap with…';
   if(S.sel){ $('#zoom').value=S.sel.zoom; $('#zoomV').textContent=S.sel.zoom.toFixed(1)+'×'; }
+  syncFeat();
 }
 function select(it){
-  S.sel=it; S.swap=false;
+  S.sel=it; S.swap=false; if(it) featDefaults(it);
   setTab(it?'photo':'layout'); syncUI(); draw();
 }
 function fitView(){
@@ -456,13 +479,19 @@ async function addFiles(list){
   if(!files.length){toast('No images found in that selection.');return;}
   pushHist();
   const wasEmpty=!S.items.length; let failed=0;
-  for(let i=0;i<files.length;i++){
-    toast(`Loading ${i+1} of ${files.length}…`,true);
-    try{
-      const prev=await decode(files[i],900);
-      S.items.push({id:S.nextId++,file:files[i],prev,ar:prev.width/prev.height,x:0,y:0,w:100,h:100,zoom:1,pan:[0,0]});
-    }catch(e){failed++;}
-  }
+  const results=new Array(files.length); let next=0,done=0;
+  toast(`Loading 0 of ${files.length}…`,true);
+  const worker=async()=>{
+    while(next<files.length){
+      const i=next++;
+      try{ results[i]=await decode(files[i],800); }catch(e){ failed++; }
+      done++; toast(`Loading ${done} of ${files.length}…`,true);
+    }
+  };
+  await Promise.all([worker(),worker(),worker()]);
+  results.forEach((prev,i)=>{
+    if(prev) S.items.push({id:S.nextId++,file:files[i],prev,ar:prev.width/prev.height,x:0,y:0,w:100,h:100,zoom:1,pan:[0,0]});
+  });
   if(!S.items.length){history.pop();syncUI();toast('Those photos could not be opened.');return;}
   if(wasEmpty) S.slides=clamp(Math.ceil(S.items.length/3),2,10);
   else S.slides=Math.max(S.slides,Math.ceil(S.items.length/5));
@@ -615,6 +644,126 @@ $('#removeBtn').onclick=()=>{
 $('#doneBtn').onclick=()=>select(null);
 $('#tabLayout').onclick=()=>setTab('layout');
 $('#tabPhoto').onclick=()=>setTab('photo');
+
+
+/* ---------- feature photo layout ---------- */
+function gridCells(r,n){
+  let best=null;
+  for(let rows=1;rows<=Math.min(n,5);rows++){
+    const base=Math.floor(n/rows),extra=n%rows; let dev=0; const cells=[];
+    for(let i=0;i<rows;i++){
+      const cnt=base+(i<extra?1:0),ch=r.h/rows,cw=r.w/cnt;
+      dev=Math.max(dev,Math.abs(Math.log(cw/ch)));
+      for(let j=0;j<cnt;j++) cells.push({x:r.x+j*cw,y:r.y+i*ch,w:cw,h:ch});
+    }
+    if(!best||dev<best.dev) best={dev,cells};
+  }
+  return best.cells;
+}
+function assignCells(its,cells){
+  const n=its.length; if(!n) return;
+  const perm=cells.map((_,i)=>i).sort(()=>Math.random()-.5);
+  const cost=(it,c)=>Math.abs(Math.log(it.ar/(c.w/c.h)));
+  for(let k=0;k<400&&n>1;k++){
+    const i=Math.floor(Math.random()*n),j=Math.floor(Math.random()*n); if(i===j) continue;
+    const a=its[i],b=its[j],ca=cells[perm[i]],cb=cells[perm[j]];
+    if(cost(a,ca)+cost(b,cb)>cost(a,cb)+cost(b,ca)){const t=perm[i];perm[i]=perm[j];perm[j]=t;}
+  }
+  its.forEach((it,i)=>{const c=cells[perm[i]];it.x=c.x;it.y=c.y;it.w=c.w;it.h=c.h;it.zoom=1;it.pan=[0,0];});
+}
+function layoutRegion(its,x0,ns){
+  const n=its.length; if(!n||ns<1) return;
+  const cand=[];
+  for(let i=0;i<200;i++){const c=genCells(n,x0,ns);cand.push({c,s:scoreCells(c,x0,ns)+Math.random()*1.5});}
+  cand.sort((a,b)=>a.s-b.s);
+  assignCells(its,cand[Math.floor(Math.random()*Math.min(3,cand.length))].c);
+}
+function applyFeature(cfg){
+  const main=S.items.find(i=>i.id===cfg.id);
+  if(!main){S.feature=null;return false;}
+  const ns=S.slides,slide=clamp(cfg.slide,0,ns-1),W=S.W,H=S.H,X=slide*W,a=slide,b=ns-slide-1;
+  const cxs=X+W/2;
+  const others=S.items.filter(i=>i!==main).sort((p,q)=>Math.abs(p.x+p.w/2-cxs)-Math.abs(q.x+q.w/2-cxs));
+  const n=(a+b===0)?others.length:Math.min(cfg.n,others.length);
+  const sur=others.slice(0,n),rest=others.slice(n);
+  const f=clamp(cfg.size,.35,.9);
+  let mr={x:X,y:0,w:W,h:H},cells=[];
+  if(n>0){
+    if(cfg.side==='left'){const sw=W*(1-f);cells=gridCells({x:X,y:0,w:sw,h:H},n);mr={x:X+sw,y:0,w:W-sw,h:H};}
+    else if(cfg.side==='right'){const sw=W*(1-f);cells=gridCells({x:X+W-sw,y:0,w:sw,h:H},n);mr={x:X,y:0,w:W-sw,h:H};}
+    else if(cfg.side==='top'){const sh=H*(1-f);cells=gridCells({x:X,y:0,w:W,h:sh},n);mr={x:X,y:sh,w:W,h:H-sh};}
+    else if(cfg.side==='bottom'){const sh=H*(1-f);cells=gridCells({x:X,y:H-sh,w:W,h:sh},n);mr={x:X,y:0,w:W,h:H-sh};}
+    else{
+      const cnt=[0,0,0,0]; for(let i=0;i<n;i++) cnt[i%4]++;   // top, bottom, left, right
+      const pv=(cnt[0]>0)+(cnt[1]>0),ph=(cnt[2]>0)+(cnt[3]>0);
+      const mt=cnt[0]?H*(1-f)/pv:0,mb=cnt[1]?H*(1-f)/pv:0,ml=cnt[2]?W*(1-f)/ph:0,mrr=cnt[3]?W*(1-f)/ph:0;
+      if(cnt[0]) cells.push(...gridCells({x:X,y:0,w:W,h:mt},cnt[0]));
+      if(cnt[1]) cells.push(...gridCells({x:X,y:H-mb,w:W,h:mb},cnt[1]));
+      if(cnt[2]) cells.push(...gridCells({x:X,y:mt,w:ml,h:H-mt-mb},cnt[2]));
+      if(cnt[3]) cells.push(...gridCells({x:X+W-mrr,y:mt,w:mrr,h:H-mt-mb},cnt[3]));
+      mr={x:X+ml,y:mt,w:W-ml-mrr,h:H-mt-mb};
+    }
+  }
+  Object.assign(main,{x:mr.x,y:mr.y,w:mr.w,h:mr.h,zoom:1,pan:[0,0]});
+  assignCells(sur,cells);
+  // everything else fills the slides on either side
+  const R=rest.length; rest.sort((p,q)=>(p.x+p.w/2)-(q.x+q.w/2));
+  let la=0;
+  if(a>0&&b>0){ la=Math.round(R*a/(a+b)); la=R>=2?clamp(la,1,R-1):R; }
+  else if(a>0) la=R;
+  layoutRegion(rest.slice(0,la),0,a);
+  layoutRegion(rest.slice(la),(slide+1)*W,b);
+  return true;
+}
+function emptySlides(){
+  let e=0;
+  for(let k=0;k<S.slides;k++){
+    const ox=k*S.W;
+    if(!S.items.some(it=>it.x<ox+S.W-1&&it.x+it.w>ox+1)) e++;
+  }
+  return e;
+}
+function featDefaults(it){
+  syncFeat();
+  if(S.feature&&S.feature.id===it.id){
+    const c=S.feature; FEAT.n=c.n; FEAT.side=c.side; FEAT.size=Math.round(c.size*100);
+    $('#featSlide').value=String(clamp(c.slide,0,S.slides-1));
+  }else $('#featSlide').value=String(clamp(Math.floor((it.x+it.w/2)/S.W),0,S.slides-1));
+}
+const FEAT_HINTS={
+  left:'Surrounding photos form a strip on the left. The other sides stay clear.',
+  right:'Surrounding photos form a strip on the right. The other sides stay clear.',
+  top:'Surrounding photos form a strip along the top. The other sides stay clear.',
+  bottom:'Surrounding photos form a strip along the bottom. The other sides stay clear.',
+  around:'Surrounding photos wrap the main one. With fewer than four, they fill top, bottom, then left.'
+};
+function syncFeat(){
+  const fs=$('#featSlide'); if(!fs) return;
+  if(fs.options.length!==S.slides){
+    const v=+fs.value||0; fs.innerHTML='';
+    for(let i=0;i<S.slides;i++){const o=document.createElement('option');o.value=String(i);o.textContent='Slide '+(i+1);fs.appendChild(o);}
+    fs.value=String(clamp(v,0,S.slides-1));
+  }
+  const mx=Math.max(0,Math.min(8,S.items.length-1)); FEAT.n=clamp(FEAT.n,0,mx);
+  $('#featN').textContent=FEAT.n; $('#featSize').value=FEAT.size; $('#featSizeV').textContent=FEAT.size+'%';
+  document.querySelectorAll('#featSide .chip').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.s===FEAT.side)));
+  $('#featClear').hidden=!S.feature;
+  $('#featHint').textContent=(FEAT.n===0?'The photo fills the whole slide. ':FEAT_HINTS[FEAT.side]+' ')+'Other photos fill the remaining slides, and Shuffle keeps this layout until you stop featuring.';
+}
+$('#featMinus').onclick=()=>{FEAT.n--;syncFeat();};
+$('#featPlus').onclick=()=>{FEAT.n++;syncFeat();};
+document.querySelectorAll('#featSide .chip').forEach(b=>b.onclick=()=>{FEAT.side=b.dataset.s;syncFeat();});
+$('#featSize').oninput=e=>{FEAT.size=+e.target.value;$('#featSizeV').textContent=FEAT.size+'%';};
+$('#featApply').onclick=()=>{
+  if(!S.sel) return;
+  if(S.items.length<2&&FEAT.n>0){toast('Add more photos first.');return;}
+  pushHist();
+  const cfg={id:S.sel.id,slide:+$('#featSlide').value||0,n:FEAT.n,side:FEAT.side,size:FEAT.size/100};
+  S.feature=cfg; S.swap=false; applyFeature(cfg); resize(); syncUI();
+  const e=emptySlides();
+  if(e) toast(`${e} slide${e>1?'s':''} ended up empty. Lower the photos around, or add more photos.`);
+};
+$('#featClear').onclick=()=>{pushHist();S.feature=null;syncUI();toast('Layout is free again. Shuffle will reshuffle everything.');};
 
 const fileIn=$('#file');
 ['#addBtn','#pickBtn'].forEach(s=>$(s).onclick=()=>fileIn.click());
