@@ -212,7 +212,7 @@ input[type=color]{width:38px;height:34px;border:0;padding:0;background:none;curs
           </div>
           <div class="row"><label for="featSize">Main size</label><input type="range" id="featSize" min="40" max="85" value="62"><span class="val" id="featSizeV">62%</span></div>
           <p class="hint" id="featHint"></p>
-          <div class="actions"><button class="btn primary" id="featApply">Apply layout</button><button class="btn" id="featClear" hidden>Stop featuring</button></div>
+          <div class="actions"><button class="btn primary" id="featApply">Apply layout</button><button class="btn" id="featClear" hidden>Stop featuring this slide</button><button class="btn" id="featClearAll" hidden>Clear all main photos</button></div>
         </div>
         <div class="actions">
           <button class="btn" id="swapBtn" aria-pressed="false">Swap with…</button>
@@ -273,7 +273,7 @@ const RATIOS={'4:5':[4,5],'1:1':[1,1],'9:16':[9,16]};
 const SWATCHES=['#ffffff','#f3ece1','#d8e4f0','#101114','#e0145a'];
 
 const S={W:1080,H:1350,ratio:'4:5',slides:3,gap:20,radius:24,bg:'#ffffff',
-  items:[],sel:null,mode:'frame',vz:.35,bs:1,guides:true,swap:false,nextId:1,feature:null,style:'tiled',border:10,ovAmt:1,bcolor:'#ffffff',prevRadius:null};
+  items:[],sel:null,mode:'frame',vz:.35,bs:1,guides:true,swap:false,nextId:1,features:[],style:'tiled',border:10,ovAmt:1,bcolor:'#ffffff',prevRadius:null};
 let history=[];
 const FEAT={n:3,side:'left',size:62};
 const cv=$('#cv'), cx=cv.getContext('2d');
@@ -361,7 +361,7 @@ function scoreCells(cells,x0=0,ns=S.slides){
 }
 function layoutAll(){
   const n=S.items.length; if(!n) return;
-  if(S.feature&&applyFeature(S.feature)){finishLayout();return;}
+  if(S.features.length&&applyAllFeatures()){finishLayout();return;}
   const cand=[];
   for(let i=0;i<260;i++){const c=genCells(n);cand.push({c,s:scoreCells(c)+Math.random()*1.5});}
   cand.sort((a,b)=>a.s-b.s);
@@ -458,11 +458,11 @@ function draw(){
 }
 
 /* ---------- history ---------- */
-const snap=()=>({items:S.items.map(i=>({...i,pan:[...i.pan]})),slides:S.slides,ratio:S.ratio,H:S.H,sel:S.sel?S.sel.id:null,feature:S.feature?{...S.feature}:null,style:S.style,radius:S.radius,prevRadius:S.prevRadius});
+const snap=()=>({items:S.items.map(i=>({...i,pan:[...i.pan]})),slides:S.slides,ratio:S.ratio,H:S.H,sel:S.sel?S.sel.id:null,features:S.features.map(f=>({...f,members:[...f.members]})),style:S.style,radius:S.radius,prevRadius:S.prevRadius});
 function pushHist(){history.push(snap()); if(history.length>60) history.shift(); $('#undo').disabled=false;}
 function undo(){
   const h=history.pop(); if(!h) return;
-  S.items=h.items; S.slides=h.slides; S.ratio=h.ratio; S.H=h.H; S.swap=false; S.feature=h.feature; S.style=h.style; S.radius=h.radius; S.prevRadius=h.prevRadius;
+  S.items=h.items; S.slides=h.slides; S.ratio=h.ratio; S.H=h.H; S.swap=false; S.features=h.features; S.style=h.style; S.radius=h.radius; S.prevRadius=h.prevRadius;
   S.sel=S.items.find(i=>i.id===h.sel)||null;
   resize(); syncUI();
 }
@@ -523,7 +523,8 @@ async function addFiles(list){
   if(!S.items.length){history.pop();syncUI();toast('Those photos could not be opened.');return;}
   if(wasEmpty) S.slides=clamp(Math.ceil(S.items.length/3),2,10);
   else S.slides=Math.max(S.slides,Math.ceil(S.items.length/5));
-  S.sel=null; S.swap=false; layoutAll();
+  S.sel=null; S.swap=false;
+  if(S.features.length&&!wasEmpty){ const r=layoutFree(); finishLayout(r.scope); } else layoutAll();   // main-photo slides stay put
   syncUI();            // reveals the stage so it can be measured
   if(wasEmpty) fitView();
   setTab('layout'); resize(); syncUI();
@@ -644,7 +645,9 @@ $('#guides').onchange=e=>{S.guides=e.target.checked;draw();};
 
 function changeSlides(d){
   const n=clamp(S.slides+d,1,20); if(n===S.slides) return;
-  pushHist(); S.slides=n; S.sel=null; S.swap=false; layoutAll(); resize(); syncUI();
+  pushHist(); S.slides=n; S.sel=null; S.swap=false;
+  if(S.features.length){ S.features=S.features.filter(f=>f.slide<n); const r=layoutFree(); finishLayout(r.scope); } else layoutAll();
+  resize(); syncUI();
 }
 $('#slMinus').onclick=()=>changeSlides(-1);
 $('#slPlus').onclick=()=>changeSlides(1);
@@ -665,8 +668,11 @@ $('#swapBtn').onclick=()=>{S.swap=!S.swap;syncUI();draw();};
 $('#frontBtn').onclick=()=>{ if(!S.sel) return; pushHist(); S.items=S.items.filter(i=>i!==S.sel).concat(S.sel); draw(); syncUI(); };
 $('#resetBtn').onclick=()=>{ if(!S.sel) return; pushHist(); S.sel.zoom=1; S.sel.pan=[0,0]; draw(); syncUI(); };
 $('#removeBtn').onclick=()=>{
-  if(!S.sel) return; pushHist(); S.items=S.items.filter(i=>i!==S.sel); S.sel=null; S.swap=false;
-  if(S.items.length) layoutAll();
+  if(!S.sel) return; pushHist(); const removedId=S.sel.id; S.items=S.items.filter(i=>i!==S.sel); S.sel=null; S.swap=false;
+  if(S.items.length){
+    if(S.features.length){ const gone=removedId; const t=dropFromFeatures(gone); t.forEach(placeBlock); const r=layoutFree(); finishLayout(r.scope); }
+    else layoutAll();
+  }
   setTab('layout'); resize(); syncUI();
 };
 $('#doneBtn').onclick=()=>select(null);
@@ -706,15 +712,17 @@ function layoutRegion(its,x0,ns){
   cand.sort((a,b)=>a.s-b.s);
   assignCells(its,cand[Math.floor(Math.random()*Math.min(3,cand.length))].c);
 }
-function applyFeature(cfg){
-  const main=S.items.find(i=>i.id===cfg.id);
-  if(!main){S.feature=null;return false;}
-  const ns=S.slides,slide=clamp(cfg.slide,0,ns-1),W=S.W,H=S.H,X=slide*W,a=slide,b=ns-slide-1;
-  const cxs=X+W/2;
-  const others=S.items.filter(i=>i!==main).sort((p,q)=>Math.abs(p.x+p.w/2-cxs)-Math.abs(q.x+q.w/2-cxs));
-  const n=(a+b===0)?others.length:Math.min(cfg.n,others.length);
-  const sur=others.slice(0,n),rest=others.slice(n);
-  const f=clamp(cfg.size,.35,.9);
+function featAt(slide){return S.features.find(f=>f.slide===slide);}
+function lockedIds(except){
+  const t=new Set();
+  for(const f of S.features){ if(f===except) continue; t.add(f.id); f.members.forEach(m=>t.add(m)); }
+  return t;
+}
+// lays out one slide: the main photo plus the photos around it (nothing outside that slide is touched)
+function placeBlock(cfg){
+  const main=S.items.find(i=>i.id===cfg.id); if(!main) return false;
+  const sur=cfg.members.map(id=>S.items.find(i=>i.id===id)).filter(Boolean), n=sur.length;
+  const W=S.W,H=S.H,X=cfg.slide*W,f=clamp(cfg.size,.35,.9);
   let mr={x:X,y:0,w:W,h:H},cells=[];
   if(n>0){
     if(cfg.side==='left'){const sw=W*(1-f);cells=gridCells({x:X,y:0,w:sw,h:H},n);mr={x:X+sw,y:0,w:W-sw,h:H};}
@@ -734,14 +742,64 @@ function applyFeature(cfg){
   }
   Object.assign(main,{x:mr.x,y:mr.y,w:mr.w,h:mr.h,zoom:1,pan:[0,0]});
   assignCells(sur,cells);
-  // everything else fills the slides on either side
-  const R=rest.length; rest.sort((p,q)=>(p.x+p.w/2)-(q.x+q.w/2));
-  let la=0;
-  if(a>0&&b>0){ la=Math.round(R*a/(a+b)); la=R>=2?clamp(la,1,R-1):R; }
-  else if(a>0) la=R;
-  layoutRegion(rest.slice(0,la),0,a);
-  layoutRegion(rest.slice(la),(slide+1)*W,b);
   return true;
+}
+// picks the photos that surround a new main photo: the closest ones that are not already in another slide's block
+function pickMembers(cfg){
+  const cx=cfg.slide*S.W+S.W/2, locked=lockedIds(cfg);
+  const cand=S.items.filter(i=>i.id!==cfg.id&&!locked.has(i.id)).sort((p,q)=>Math.abs(p.x+p.w/2-cx)-Math.abs(q.x+q.w/2-cx));
+  let freeSlides=0; for(let k=0;k<S.slides;k++) if(!featAt(k)) freeSlides++;
+  const n=Math.max(0,Math.min(cfg.n,cand.length-freeSlides,8));
+  cfg.members=cand.slice(0,n).map(i=>i.id);
+}
+// lays out every photo that is not part of a main-photo slide, across the slides that have no main photo
+function layoutFree(){
+  const ns=S.slides,W=S.W,taken=lockedIds(null);
+  const free=S.items.filter(i=>!taken.has(i.id));
+  const segs=[]; let s=0;
+  while(s<ns){ if(featAt(s)){s++;continue;} let e=s; while(e+1<ns&&!featAt(e+1)) e++; segs.push([s,e]); s=e+1; }
+  if(!segs.length){            // every slide has a main photo: leftovers join the nearest one
+    const touched=new Set();
+    for(const it of free){
+      const c=clamp(Math.floor((it.x+it.w/2)/W),0,ns-1); let best=null,bd=1e9;
+      for(const f of S.features){const d=Math.abs(f.slide-c); if(d<bd){bd=d;best=f;}}
+      if(best){best.members.push(it.id);touched.add(best);}
+    }
+    touched.forEach(placeBlock);
+    return {scope:{ids:new Set(),slides:[]}};
+  }
+  free.sort((p,q)=>(p.x+p.w/2)-(q.x+q.w/2));
+  const total=segs.reduce((p,g)=>p+g[1]-g[0]+1,0);
+  const counts=segs.map(g=>Math.round(free.length*(g[1]-g[0]+1)/total));
+  let diff=free.length-counts.reduce((p,c)=>p+c,0);
+  for(let i=0;diff!==0&&i<1000;i++){const k=i%counts.length; if(diff>0){counts[k]++;diff--;}else if(counts[k]>0){counts[k]--;diff++;}}
+  if(free.length>=segs.length) for(let k=0;k<counts.length;k++) if(counts[k]===0){counts[counts.indexOf(Math.max(...counts))]--;counts[k]++;}
+  let pos=0; const slides=[];
+  segs.forEach((g,k)=>{
+    layoutRegion(free.slice(pos,pos+counts[k]),g[0]*W,g[1]-g[0]+1); pos+=counts[k];
+    for(let q=g[0];q<=g[1];q++) slides.push(q);
+  });
+  return {scope:{ids:new Set(free.map(i=>i.id)),slides}};
+}
+// full re-layout from the saved main-photo settings (used by Shuffle and other whole-canvas changes)
+function applyAllFeatures(){
+  const ns=S.slides,seen=new Set();
+  S.features=S.features.filter(f=>{
+    if(f.slide>=ns||seen.has(f.slide)||!S.items.some(i=>i.id===f.id)) return false;
+    seen.add(f.slide); return true;
+  });
+  if(!S.features.length) return false;
+  const used=new Set(S.features.map(f=>f.id));
+  for(const f of S.features) f.members=f.members.filter(id=>S.items.some(i=>i.id===id)&&!used.has(id)&&(used.add(id),true));
+  S.features.forEach(placeBlock);
+  layoutFree();
+  return true;
+}
+function dropFromFeatures(id){
+  const touched=[];
+  S.features=S.features.filter(f=>f.id!==id);
+  for(const f of S.features) if(f.members.includes(id)){f.members=f.members.filter(m=>m!==id);touched.push(f);}
+  return touched;
 }
 function emptySlides(){
   let e=0;
@@ -753,10 +811,12 @@ function emptySlides(){
 }
 function featDefaults(it){
   syncFeat();
-  if(S.feature&&S.feature.id===it.id){
-    const c=S.feature; FEAT.n=c.n; FEAT.side=c.side; FEAT.size=Math.round(c.size*100);
+  const c=S.features.find(f=>f.id===it.id);
+  if(c){
+    FEAT.n=c.n; FEAT.side=c.side; FEAT.size=Math.round(c.size*100);
     $('#featSlide').value=String(clamp(c.slide,0,S.slides-1));
   }else $('#featSlide').value=String(clamp(Math.floor((it.x+it.w/2)/S.W),0,S.slides-1));
+  syncFeat();
 }
 const FEAT_HINTS={
   left:'Surrounding photos form a strip on the left. The other sides stay clear.',
@@ -772,62 +832,87 @@ function syncFeat(){
     for(let i=0;i<S.slides;i++){const o=document.createElement('option');o.value=String(i);o.textContent='Slide '+(i+1);fs.appendChild(o);}
     fs.value=String(clamp(v,0,S.slides-1));
   }
+  for(let i=0;i<fs.options.length;i++) fs.options[i].textContent='Slide '+(i+1)+(featAt(i)?' ✓':'');
   const mx=Math.max(0,Math.min(8,S.items.length-1)); FEAT.n=clamp(FEAT.n,0,mx);
   $('#featN').textContent=FEAT.n; $('#featSize').value=FEAT.size; $('#featSizeV').textContent=FEAT.size+'%';
   document.querySelectorAll('#featSide .chip').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.s===FEAT.side)));
-  $('#featClear').hidden=!S.feature;
-  $('#featHint').textContent=(FEAT.n===0?'The photo fills the whole slide. ':FEAT_HINTS[FEAT.side]+' ')+'Other photos fill the remaining slides, and Shuffle keeps this layout until you stop featuring.';
+  const here=featAt(+fs.value||0);
+  $('#featClear').hidden=!here; $('#featClearAll').hidden=S.features.length<2;
+  const list=S.features.slice().sort((a,b)=>a.slide-b.slide).map(f=>f.slide+1).join(', ');
+  $('#featHint').textContent=(FEAT.n===0?'The photo fills the whole slide. ':FEAT_HINTS[FEAT.side]+' ')
+    +'Each slide can have its own main photo. Applying one leaves the other main-photo slides as they are'+(list?` (set on slide ${list})`:'')+'. Applying on a slide that already has one replaces it.';
 }
 $('#featMinus').onclick=()=>{FEAT.n--;syncFeat();};
 $('#featPlus').onclick=()=>{FEAT.n++;syncFeat();};
+$('#featSlide').onchange=()=>{
+  const c=featAt(+$('#featSlide').value||0);
+  if(c){FEAT.n=c.n;FEAT.side=c.side;FEAT.size=Math.round(c.size*100);}
+  syncFeat();
+};
 document.querySelectorAll('#featSide .chip').forEach(b=>b.onclick=()=>{FEAT.side=b.dataset.s;syncFeat();});
 $('#featSize').oninput=e=>{FEAT.size=+e.target.value;$('#featSizeV').textContent=FEAT.size+'%';};
 $('#featApply').onclick=()=>{
   if(!S.sel) return;
   if(S.items.length<2&&FEAT.n>0){toast('Add more photos first.');return;}
   pushHist();
-  const cfg={id:S.sel.id,slide:+$('#featSlide').value||0,n:FEAT.n,side:FEAT.side,size:FEAT.size/100};
-  S.feature=cfg; S.swap=false; applyFeature(cfg); resize(); syncUI();
+  const slide=+$('#featSlide').value||0,id=S.sel.id;
+  const touched=new Set();
+  S.features=S.features.filter(f=>f.id!==id);                  // if this photo was the main one elsewhere, that slide goes back to normal
+  for(const f of S.features) if(f.members.includes(id)){f.members=f.members.filter(m=>m!==id);touched.add(f);}   // or one of the surrounding ones
+  S.features=S.features.filter(f=>f.slide!==slide);            // replaces whatever was featured on this slide
+  const cfg={id,slide,n:FEAT.n,side:FEAT.side,size:FEAT.size/100,members:[]};
+  S.features.push(cfg); pickMembers(cfg);
+  placeBlock(cfg); touched.forEach(f=>{ if(S.features.includes(f)) placeBlock(f); });
+  const r=layoutFree();
+  [cfg.id,...cfg.members].forEach(i=>r.scope.ids.add(i));
+  finishLayout(r.scope);
+  S.swap=false; resize(); syncUI();
   const e=emptySlides();
   if(e) toast(`${e} slide${e>1?'s':''} ended up empty. Lower the photos around, or add more photos.`);
 };
-$('#featClear').onclick=()=>{pushHist();S.feature=null;syncUI();toast('Layout is free again. Shuffle will reshuffle everything.');};
+$('#featClear').onclick=()=>{
+  const sl=+$('#featSlide').value||0; if(!featAt(sl)) return;
+  pushHist(); S.features=S.features.filter(f=>f.slide!==sl);
+  const r=layoutFree(); finishLayout(r.scope); resize(); syncUI();
+  toast('Slide '+(sl+1)+' is back to the normal layout.');
+};
+$('#featClearAll').onclick=()=>{pushHist();S.features=[];layoutAll();resize();syncUI();toast('All main photos cleared.');};
 
 /* ---------- overlay style ---------- */
-function finishLayout(){
+function finishLayout(scope){
   if(S.style!=='overlay') return;
   const W=S.W,H=S.H,ns=S.slides,tw=TW();
-  const fid=S.feature?S.feature.id:null, fslide=S.feature?clamp(S.feature.slide,0,ns-1):-1;
-  S.items.forEach(it=>{it.ov=.02+Math.random()*.06;});
-  // backdrops: a photo stretched behind about every second slide, others float on top of it
+  const inScope=it=>!scope||scope.ids.has(it.id);
+  const locked=lockedIds(null);
+  S.items.forEach(it=>{ if(inScope(it)) it.ov=.02+Math.random()*.06; });
+  // backdrops: a photo stretched behind about every second free slide, others float on top of it
+  const allowed=scope?scope.slides.slice():Array.from({length:ns},(_,k)=>k).filter(k=>!featAt(k));
   const maxBack=Math.floor(S.items.length/3), backs=[];
   if(ns>=2&&maxBack>0){
-    let s=Math.floor(Math.random()*2);
-    while(s<ns&&backs.length<maxBack){
-      if(s!==fslide){
-        const sx=s*W; let best=null,bs=-1e9;
-        for(const it of S.items){
-          if(it.id===fid||backs.includes(it)) continue;
-          const ox=Math.min(it.x+it.w,sx+W)-Math.max(it.x,sx); if(ox<=0) continue;
-          const sc=ox*Math.min(it.h,H)/(W*H)-.15*Math.min(1.5,Math.abs(Math.log(it.ar/(W/H))));
-          if(sc>bs){bs=sc;best=it;}
-        }
-        if(best){
-          const x=Math.max(0,Math.min(best.x,sx-Math.random()*.1*W)),x2=Math.min(tw,Math.max(best.x+best.w,sx+W+Math.random()*.1*W));   // also covers the photo's old cell, so nothing is left empty
-          Object.assign(best,{x,y:0,w:x2-x,h:H,ov:0,zoom:1,pan:[0,0]}); backs.push(best);
-          for(const it of S.items){            // shrink the rest of this slide so the backdrop shows around them
-            if(it===best||it.id===fid||backs.includes(it)) continue;
-            const cx=it.x+it.w/2,cy=it.y+it.h/2; if(cx<sx||cx>=sx+W) continue;
-            const f=.72+Math.random()*.16,nw=it.w*f,nh=it.h*f; if(nw<220||nh<220) continue;
-            it.x=cx-nw/2; it.y=cy-nh/2; it.w=nw; it.h=nh;
-          }
+    for(let k=Math.floor(Math.random()*2);k<allowed.length&&backs.length<maxBack;k+=2+Math.floor(Math.random()*2)){
+      const s=allowed[k],sx=s*W; let best=null,bs=-1e9;
+      for(const it of S.items){
+        if(!inScope(it)||locked.has(it.id)||backs.includes(it)) continue;
+        const ox=Math.min(it.x+it.w,sx+W)-Math.max(it.x,sx); if(ox<=0) continue;
+        const sc=ox*Math.min(it.h,H)/(W*H)-.15*Math.min(1.5,Math.abs(Math.log(it.ar/(W/H))));
+        if(sc>bs){bs=sc;best=it;}
+      }
+      if(best){
+        const x=Math.max(0,Math.min(best.x,sx-Math.random()*.1*W)),x2=Math.min(tw,Math.max(best.x+best.w,sx+W+Math.random()*.1*W));   // also covers the photo's old cell, so nothing is left empty
+        Object.assign(best,{x,y:0,w:x2-x,h:H,ov:0,zoom:1,pan:[0,0]}); backs.push(best);
+        for(const it of S.items){            // shrink the rest of this slide so the backdrop shows around them
+          if(it===best||!inScope(it)||locked.has(it.id)||backs.includes(it)) continue;
+          const cx=it.x+it.w/2,cy=it.y+it.h/2; if(cx<sx||cx>=sx+W) continue;
+          const f=.72+Math.random()*.16,nw=it.w*f,nh=it.h*f; if(nw<220||nh<220) continue;
+          it.x=cx-nw/2; it.y=cy-nh/2; it.w=nw; it.h=nh;
         }
       }
-      s+=2+Math.floor(Math.random()*2);
     }
   }
-  S.items.sort((p,q)=>((backs.includes(q)?1:0)-(backs.includes(p)?1:0))||(q.w*q.h-p.w*p.h));
-  if(S.feature){const m=S.items.find(i=>i.id===S.feature.id); if(m) S.items=S.items.filter(i=>i!==m).concat(m);}
+  const isBack=it=>!locked.has(it.id)&&it.h>=H-1&&it.w>=W-1;
+  S.items.sort((p,q)=>((isBack(q)?1:0)-(isBack(p)?1:0))||(q.w*q.h-p.w*p.h));
+  const mains=new Set(S.features.map(f=>f.id));         // main photos sit on top of their slide
+  S.items=S.items.filter(i=>!mains.has(i.id)).concat(S.items.filter(i=>mains.has(i.id)));
 }
 function setStyle(st){
   if(S.style===st) return;
