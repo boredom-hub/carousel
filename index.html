@@ -156,8 +156,21 @@ input[type=color]{width:38px;height:34px;border:0;padding:0;background:none;curs
           <button class="chip" data-r="9:16" aria-pressed="false">9:16</button>
         </div>
       </div>
-      <div class="row"><label for="gap">Spacing</label><input type="range" id="gap" min="0" max="80" value="20"><span class="val" id="gapV">20</span></div>
+      <div class="row" id="gapRow"><label for="gap">Spacing</label><input type="range" id="gap" min="0" max="80" value="20"><span class="val" id="gapV">20</span></div>
       <div class="row"><label for="rad">Corners</label><input type="range" id="rad" min="0" max="120" value="24"><span class="val" id="radV">24</span></div>
+      <div class="row">
+        <span class="lab">Style</span>
+        <div class="chips" id="styles">
+          <button class="chip" data-st="tiled" aria-pressed="true">Tiled</button>
+          <button class="chip" data-st="overlay" aria-pressed="false">Overlay</button>
+        </div>
+      </div>
+      <div id="ovRows" hidden style="display:grid;gap:14px">
+        <div class="row"><label for="bdr">Border</label><input type="range" id="bdr" min="0" max="30" value="10"><span class="val" id="bdrV">10</span></div>
+        <div class="row"><label for="ovl">Overlap</label><input type="range" id="ovl" min="0" max="200" value="100"><span class="val" id="ovlV">100%</span></div>
+        <div class="row"><span class="lab">Border colour</span><div class="chips" id="bdrSw"></div><input type="color" id="bdrPick" value="#ffffff" aria-label="Custom border colour"></div>
+        <p class="hint">Photos overlap with white borders, and the biggest one peeks out behind the rest. Use Send to back or Bring to front in the Photo tab to change what sits on top.</p>
+      </div>
       <div class="row">
         <span class="lab">Background</span>
         <div class="chips" id="swatches"></div>
@@ -202,6 +215,7 @@ input[type=color]{width:38px;height:34px;border:0;padding:0;background:none;curs
         <div class="actions">
           <button class="btn" id="swapBtn" aria-pressed="false">Swap with…</button>
           <button class="btn" id="frontBtn">Bring to front</button>
+          <button class="btn" id="backBtn">Send to back</button>
           <button class="btn" id="resetBtn">Reset crop</button>
           <button class="btn" id="removeBtn">Remove photo</button>
         </div>
@@ -256,7 +270,7 @@ const RATIOS={'4:5':[4,5],'1:1':[1,1],'9:16':[9,16]};
 const SWATCHES=['#ffffff','#f3ece1','#d8e4f0','#101114','#e0145a'];
 
 const S={W:1080,H:1350,ratio:'4:5',slides:3,gap:20,radius:24,bg:'#ffffff',
-  items:[],sel:null,mode:'frame',vz:.35,bs:1,guides:true,swap:false,nextId:1,feature:null};
+  items:[],sel:null,mode:'frame',vz:.35,bs:1,guides:true,swap:false,nextId:1,feature:null,style:'tiled',border:10,ovAmt:1,bcolor:'#ffffff',prevRadius:null};
 let history=[];
 const FEAT={n:3,side:'left',size:62};
 const cv=$('#cv'), cx=cv.getContext('2d');
@@ -344,7 +358,7 @@ function scoreCells(cells,x0=0,ns=S.slides){
 }
 function layoutAll(){
   const n=S.items.length; if(!n) return;
-  if(S.feature&&applyFeature(S.feature)) return;
+  if(S.feature&&applyFeature(S.feature)){finishLayout();return;}
   const cand=[];
   for(let i=0;i<260;i++){const c=genCells(n);cand.push({c,s:scoreCells(c)+Math.random()*1.5});}
   cand.sort((a,b)=>a.s-b.s);
@@ -357,8 +371,14 @@ function layoutAll(){
     if(cost(a,ca)+cost(b,cb)>cost(a,cb)+cost(b,ca)){const t=perm[i];perm[i]=perm[j];perm[j]=t;}
   }
   S.items.forEach((it,i)=>{const c=cells[perm[i]];it.x=c.x;it.y=c.y;it.w=c.w;it.h=c.h;it.zoom=1;it.pan=[0,0];});
+  finishLayout();
 }
 function frameOf(it){
+  if(S.style==='overlay'){
+    const t=TW(),e=(it.ov||0)*S.ovAmt*Math.min(it.w,it.h),bd=S.border,eps=1;
+    const l=it.x<=eps?bd:e, r=it.x+it.w>=t-eps?bd:e, tp=it.y<=eps?bd:e, b=it.y+it.h>=S.H-eps?bd:e;
+    return {x:it.x-l,y:it.y-tp,w:it.w+l+r,h:it.h+tp+b};
+  }
   const e=1, total=TW(), g=S.gap;
   const l=it.x<=e?g:g/2, r=it.x+it.w>=total-e?g:g/2, t=it.y<=e?g:g/2, b=it.y+it.h>=S.H-e?g:g/2;
   return {x:it.x+l,y:it.y+t,w:Math.max(10,it.w-l-r),h:Math.max(10,it.h-t-b)};
@@ -367,6 +387,11 @@ function frameOf(it){
 /* ---------- rendering ---------- */
 function drawItem(c,it,src){
   const f=frameOf(it);
+  if(S.style==='overlay'&&S.border>0){
+    const bd=S.border; c.save();
+    pathRR(c,f.x-bd,f.y-bd,f.w+2*bd,f.h+2*bd,S.radius>0?S.radius+bd:0);
+    c.fillStyle=S.bcolor; c.fill(); c.restore();
+  }
   c.save(); pathRR(c,f.x,f.y,f.w,f.h,S.radius); c.clip();
   if(!src){ c.fillStyle='#8a8f9c'; c.fillRect(f.x,f.y,f.w,f.h); }
   else{
@@ -462,7 +487,7 @@ function syncUI(){
   $('#swapBtn').setAttribute('aria-pressed',String(S.swap));
   $('#swapBtn').textContent=S.swap?'Tap another photo…':'Swap with…';
   if(S.sel){ $('#zoom').value=S.sel.zoom; $('#zoomV').textContent=S.sel.zoom.toFixed(1)+'×'; }
-  syncFeat();
+  syncFeat(); syncStyle();
 }
 function select(it){
   S.sel=it; S.swap=false; if(it) featDefaults(it);
@@ -764,6 +789,45 @@ $('#featApply').onclick=()=>{
   if(e) toast(`${e} slide${e>1?'s':''} ended up empty. Lower the photos around, or add more photos.`);
 };
 $('#featClear').onclick=()=>{pushHist();S.feature=null;syncUI();toast('Layout is free again. Shuffle will reshuffle everything.');};
+
+/* ---------- overlay style ---------- */
+function finishLayout(){
+  if(S.style!=='overlay') return;
+  let big=null,ba=-1;
+  for(const it of S.items){
+    it.ov=.03+Math.random()*.05;
+    const a=it.w*it.h; if(a>ba&&!(S.feature&&it.id===S.feature.id)){ba=a;big=it;}
+  }
+  if(big&&S.items.length>3) big.ov=.2;            // the biggest photo peeks out behind its neighbours
+  S.items.sort((p,q)=>q.w*q.h-p.w*p.h);            // big photos at the back, small ones on top
+  if(S.feature){const m=S.items.find(i=>i.id===S.feature.id); if(m) S.items=S.items.filter(i=>i!==m).concat(m);}
+}
+function setStyle(st){
+  if(S.style===st) return;
+  pushHist(); S.style=st;
+  if(st==='overlay'){ S.prevRadius=S.radius; S.radius=0; finishLayout(); }
+  else if(S.prevRadius!=null){ S.radius=S.prevRadius; S.prevRadius=null; }
+  resize(); syncUI();
+}
+function syncStyle(){
+  const ov=S.style==='overlay';
+  document.querySelectorAll('#styles .chip').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.st===S.style)));
+  $('#ovRows').hidden=!ov; $('#gapRow').hidden=ov;
+  $('#bdr').value=S.border; $('#bdrV').textContent=S.border;
+  $('#ovl').value=Math.round(S.ovAmt*100); $('#ovlV').textContent=Math.round(S.ovAmt*100)+'%';
+  $('#bdrPick').value=S.bcolor;
+  document.querySelectorAll('#bdrSw .swatch').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.c===S.bcolor)));
+}
+document.querySelectorAll('#styles .chip').forEach(b=>b.onclick=()=>setStyle(b.dataset.st));
+['#ffffff','#161a24','#f3ece1','#e0145a'].forEach(c=>{
+  const b=document.createElement('button');b.className='swatch';b.style.background=c;b.dataset.c=c;
+  b.setAttribute('aria-label','Border '+c);b.setAttribute('aria-pressed','false');
+  b.onclick=()=>{S.bcolor=c;syncStyle();draw();};$('#bdrSw').appendChild(b);
+});
+$('#bdrPick').oninput=e=>{S.bcolor=e.target.value;syncStyle();draw();};
+$('#bdr').oninput=e=>{S.border=+e.target.value;$('#bdrV').textContent=S.border;draw();};
+$('#ovl').oninput=e=>{S.ovAmt=+e.target.value/100;$('#ovlV').textContent=e.target.value+'%';draw();};
+$('#backBtn').onclick=()=>{ if(!S.sel) return; pushHist(); S.items=[S.sel].concat(S.items.filter(i=>i!==S.sel)); draw(); syncUI(); };
 
 const fileIn=$('#file');
 ['#addBtn','#pickBtn'].forEach(s=>$(s).onclick=()=>fileIn.click());
