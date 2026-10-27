@@ -167,9 +167,9 @@ input[type=color]{width:38px;height:34px;border:0;padding:0;background:none;curs
       </div>
       <div id="ovRows" hidden style="display:grid;gap:14px">
         <div class="row"><label for="bdr">Border</label><input type="range" id="bdr" min="0" max="30" value="10"><span class="val" id="bdrV">10</span></div>
-        <div class="row"><label for="ovl">Overlap</label><input type="range" id="ovl" min="0" max="200" value="100"><span class="val" id="ovlV">100%</span></div>
+        <div class="row"><label for="ovl">Overlap, all</label><input type="range" id="ovl" min="0" max="40" value="4"><span class="val" id="ovlV">4%</span></div>
         <div class="row"><span class="lab">Border colour</span><div class="chips" id="bdrSw"></div><input type="color" id="bdrPick" value="#ffffff" aria-label="Custom border colour"></div>
-        <p class="hint">Photos overlap with white borders, and the biggest one peeks out behind the rest. Use Send to back or Bring to front in the Photo tab to change what sits on top.</p>
+        <p class="hint">Some photos become full-slide backdrops with the others floating on top. Shuffle for a new arrangement. Set the overlap for a single photo in the Photo tab, or use Overlap, all to set every photo at once.</p>
       </div>
       <div class="row">
         <span class="lab">Background</span>
@@ -192,6 +192,8 @@ input[type=color]{width:38px;height:34px;border:0;padding:0;background:none;curs
         </div>
         <p class="hint" id="modeHint"></p>
         <div class="row"><label for="zoom">Zoom</label><input type="range" id="zoom" min="1" max="4" step="0.01" value="1"><span class="val" id="zoomV">1.0×</span></div>
+        <div class="row" id="ovPhotoRow" hidden><label for="ovPhoto">Overlap</label><input type="range" id="ovPhoto" min="0" max="60" value="4"><span class="val" id="ovPhotoV">4%</span></div>
+        <p class="hint" id="ovPhotoHint" hidden>How far this photo spreads over the ones next to it. Photos on the canvas edge stay flush with it.</p>
         <div class="feat">
           <span class="lab">Feature this photo</span>
           <p class="hint">Give it the main space on one slide and choose which photos surround it.</p>
@@ -216,6 +218,7 @@ input[type=color]{width:38px;height:34px;border:0;padding:0;background:none;curs
           <button class="btn" id="swapBtn" aria-pressed="false">Swap with…</button>
           <button class="btn" id="frontBtn">Bring to front</button>
           <button class="btn" id="backBtn">Send to back</button>
+          <button class="btn" id="backdropBtn" hidden>Use as backdrop</button>
           <button class="btn" id="resetBtn">Reset crop</button>
           <button class="btn" id="removeBtn">Remove photo</button>
         </div>
@@ -455,11 +458,11 @@ function draw(){
 }
 
 /* ---------- history ---------- */
-const snap=()=>({items:S.items.map(i=>({...i,pan:[...i.pan]})),slides:S.slides,ratio:S.ratio,H:S.H,sel:S.sel?S.sel.id:null,feature:S.feature?{...S.feature}:null});
+const snap=()=>({items:S.items.map(i=>({...i,pan:[...i.pan]})),slides:S.slides,ratio:S.ratio,H:S.H,sel:S.sel?S.sel.id:null,feature:S.feature?{...S.feature}:null,style:S.style,radius:S.radius,prevRadius:S.prevRadius});
 function pushHist(){history.push(snap()); if(history.length>60) history.shift(); $('#undo').disabled=false;}
 function undo(){
   const h=history.pop(); if(!h) return;
-  S.items=h.items; S.slides=h.slides; S.ratio=h.ratio; S.H=h.H; S.swap=false; S.feature=h.feature;
+  S.items=h.items; S.slides=h.slides; S.ratio=h.ratio; S.H=h.H; S.swap=false; S.feature=h.feature; S.style=h.style; S.radius=h.radius; S.prevRadius=h.prevRadius;
   S.sel=S.items.find(i=>i.id===h.sel)||null;
   resize(); syncUI();
 }
@@ -793,30 +796,58 @@ $('#featClear').onclick=()=>{pushHist();S.feature=null;syncUI();toast('Layout is
 /* ---------- overlay style ---------- */
 function finishLayout(){
   if(S.style!=='overlay') return;
-  let big=null,ba=-1;
-  for(const it of S.items){
-    it.ov=.03+Math.random()*.05;
-    const a=it.w*it.h; if(a>ba&&!(S.feature&&it.id===S.feature.id)){ba=a;big=it;}
+  const W=S.W,H=S.H,ns=S.slides,tw=TW();
+  const fid=S.feature?S.feature.id:null, fslide=S.feature?clamp(S.feature.slide,0,ns-1):-1;
+  S.items.forEach(it=>{it.ov=.02+Math.random()*.06;});
+  // backdrops: a photo stretched behind about every second slide, others float on top of it
+  const maxBack=Math.floor(S.items.length/3), backs=[];
+  if(ns>=2&&maxBack>0){
+    let s=Math.floor(Math.random()*2);
+    while(s<ns&&backs.length<maxBack){
+      if(s!==fslide){
+        const sx=s*W; let best=null,bs=-1e9;
+        for(const it of S.items){
+          if(it.id===fid||backs.includes(it)) continue;
+          const ox=Math.min(it.x+it.w,sx+W)-Math.max(it.x,sx); if(ox<=0) continue;
+          const sc=ox*Math.min(it.h,H)/(W*H)-.15*Math.min(1.5,Math.abs(Math.log(it.ar/(W/H))));
+          if(sc>bs){bs=sc;best=it;}
+        }
+        if(best){
+          const x=Math.max(0,Math.min(best.x,sx-Math.random()*.1*W)),x2=Math.min(tw,Math.max(best.x+best.w,sx+W+Math.random()*.1*W));   // also covers the photo's old cell, so nothing is left empty
+          Object.assign(best,{x,y:0,w:x2-x,h:H,ov:0,zoom:1,pan:[0,0]}); backs.push(best);
+          for(const it of S.items){            // shrink the rest of this slide so the backdrop shows around them
+            if(it===best||it.id===fid||backs.includes(it)) continue;
+            const cx=it.x+it.w/2,cy=it.y+it.h/2; if(cx<sx||cx>=sx+W) continue;
+            const f=.72+Math.random()*.16,nw=it.w*f,nh=it.h*f; if(nw<220||nh<220) continue;
+            it.x=cx-nw/2; it.y=cy-nh/2; it.w=nw; it.h=nh;
+          }
+        }
+      }
+      s+=2+Math.floor(Math.random()*2);
+    }
   }
-  if(big&&S.items.length>3) big.ov=.2;            // the biggest photo peeks out behind its neighbours
-  S.items.sort((p,q)=>q.w*q.h-p.w*p.h);            // big photos at the back, small ones on top
+  S.items.sort((p,q)=>((backs.includes(q)?1:0)-(backs.includes(p)?1:0))||(q.w*q.h-p.w*p.h));
   if(S.feature){const m=S.items.find(i=>i.id===S.feature.id); if(m) S.items=S.items.filter(i=>i!==m).concat(m);}
 }
 function setStyle(st){
   if(S.style===st) return;
-  pushHist(); S.style=st;
-  if(st==='overlay'){ S.prevRadius=S.radius; S.radius=0; finishLayout(); }
+  pushHist(); S.sel=null; S.swap=false; S.style=st;
+  if(st==='overlay'){ S.prevRadius=S.radius; S.radius=0; }
   else if(S.prevRadius!=null){ S.radius=S.prevRadius; S.prevRadius=null; }
-  resize(); syncUI();
+  layoutAll(); setTab('layout'); resize(); syncUI();
 }
 function syncStyle(){
   const ov=S.style==='overlay';
   document.querySelectorAll('#styles .chip').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.st===S.style)));
   $('#ovRows').hidden=!ov; $('#gapRow').hidden=ov;
   $('#bdr').value=S.border; $('#bdrV').textContent=S.border;
-  $('#ovl').value=Math.round(S.ovAmt*100); $('#ovlV').textContent=Math.round(S.ovAmt*100)+'%';
+  const avg=S.items.length?Math.round(S.items.reduce((p,i)=>p+(i.ov||0),0)/S.items.length*100):0;
+  $('#ovl').value=avg; $('#ovlV').textContent=avg+'%';
   $('#bdrPick').value=S.bcolor;
   document.querySelectorAll('#bdrSw .swatch').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.c===S.bcolor)));
+  const show=ov&&!!S.sel;
+  $('#ovPhotoRow').hidden=!show; $('#ovPhotoHint').hidden=!show; $('#backdropBtn').hidden=!show;
+  if(show){ const v=Math.round((S.sel.ov||0)*100); $('#ovPhoto').value=v; $('#ovPhotoV').textContent=v+'%'; }
 }
 document.querySelectorAll('#styles .chip').forEach(b=>b.onclick=()=>setStyle(b.dataset.st));
 ['#ffffff','#161a24','#f3ece1','#e0145a'].forEach(c=>{
@@ -826,8 +857,24 @@ document.querySelectorAll('#styles .chip').forEach(b=>b.onclick=()=>setStyle(b.d
 });
 $('#bdrPick').oninput=e=>{S.bcolor=e.target.value;syncStyle();draw();};
 $('#bdr').oninput=e=>{S.border=+e.target.value;$('#bdrV').textContent=S.border;draw();};
-$('#ovl').oninput=e=>{S.ovAmt=+e.target.value/100;$('#ovlV').textContent=e.target.value+'%';draw();};
+let ovGesture=false,ovAllGesture=false;
+$('#ovPhoto').oninput=e=>{
+  if(!S.sel) return; if(!ovGesture){pushHist();ovGesture=true;}
+  S.sel.ov=+e.target.value/100; $('#ovPhotoV').textContent=e.target.value+'%'; draw();
+};
+$('#ovPhoto').onchange=()=>{ovGesture=false;syncStyle();};
+$('#ovl').oninput=e=>{
+  if(!ovAllGesture){pushHist();ovAllGesture=true;}
+  const v=+e.target.value/100; S.items.forEach(i=>{i.ov=v;}); $('#ovlV').textContent=e.target.value+'%'; draw();
+};
+$('#ovl').onchange=()=>{ovAllGesture=false;syncStyle();};
 $('#backBtn').onclick=()=>{ if(!S.sel) return; pushHist(); S.items=[S.sel].concat(S.items.filter(i=>i!==S.sel)); draw(); syncUI(); };
+$('#backdropBtn').onclick=()=>{
+  if(!S.sel) return; pushHist(); const it=S.sel;
+  const sl=clamp(Math.floor((it.x+it.w/2)/S.W),0,S.slides-1);
+  Object.assign(it,{x:sl*S.W,y:0,w:S.W,h:S.H,zoom:1,pan:[0,0],ov:0});
+  S.items=[it].concat(S.items.filter(i=>i!==it)); draw(); syncUI();
+};
 
 const fileIn=$('#file');
 ['#addBtn','#pickBtn'].forEach(s=>$(s).onclick=()=>fileIn.click());
